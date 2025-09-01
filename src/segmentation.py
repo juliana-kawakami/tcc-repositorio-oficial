@@ -2,6 +2,8 @@ import os
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
+from skimage.morphology import skeletonize
+
 
 class Segmentation:
     # ---------- LINHAS: projeção axial (cinza) + region growth por PDF ----------
@@ -229,3 +231,46 @@ class Segmentation:
     def save_gray(img, path):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         cv2.imwrite(path, img)
+
+    @staticmethod
+    def segment_words_by_components(line_bin, join_ratio=0.018, min_area=25):
+        """
+        Segmenta PALAVRAS diretamente dos COMPONENTES CONECTADOS do ESQUELETO da linha.
+        - Faz skeleton (1px)
+        - Faz um 'join' horizontal leve (dilatação) para unir letras da MESMA palavra
+        - Componentes conectados => caixas de palavra
+        Retorna:
+            word_images: recortes da linha binária por palavra
+            word_boxes_x: lista de (x1, x2) relativos à linha (compatível com seu desenho)
+            word_boxes_xyxy: lista de (x1, y1, x2, y2) completos na linha
+            line_skel: esqueleto 1px (uint8 0/255)
+        """
+        # 1) esqueleto 1px
+        skel = (skeletonize((line_bin > 0)) .astype("uint8")) * 255
+        h, w = skel.shape
+
+        # 2) join horizontal pequeno (une letras, não palavras)
+        kx = max(3, int(w * float(join_ratio)))
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (kx, 1))
+        merged = cv2.dilate(skel, kernel, iterations=1)
+
+        # 3) componentes conectados
+        num, labels, stats, _ = cv2.connectedComponentsWithStats((merged > 0).astype("uint8"), connectivity=8)
+
+        boxes_xyxy = []
+        for lbl in range(1, num):
+            x, y, ww, hh, area = stats[lbl]
+            if area < min_area or ww < 5 or hh < 5:
+                continue
+            boxes_xyxy.append((x, y, x + ww, y + hh))
+
+        # ordenar por x
+        boxes_xyxy.sort(key=lambda b: b[0])
+
+        # recortes na linha binária
+        word_images = [line_bin[y:y2, x:x2] for (x, y, x2, y2) in boxes_xyxy]
+        # também como (x1, x2) p/ compatibilidade com seus desenhadores
+        word_boxes_x = [(x, x2) for (x, y, x2, y2) in boxes_xyxy]
+
+        return word_images, word_boxes_x, boxes_xyxy, skel
+
