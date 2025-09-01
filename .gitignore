@@ -1,0 +1,36 @@
+# virtualenvs
+venv/
+.venv/
+env/
+.env/
+
+# python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.py[cod]
+
+# builds / dist
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# testes / tooling
+.coverage
+.pytest_cache/
+.mypy_cache/
+.pytype/
+.tox/
+
+# notebooks
+.ipynb_checkpoints/
+
+# IDEs / editores
+.vscode/
+.idea/
+
+# misc
+.DS_Store
+.python-version
