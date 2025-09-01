@@ -5,9 +5,9 @@ from scipy.spatial.distance import euclidean
 
 class GraphKPGraph:
     """
-    KPs por desvio angular local (contorno do esqueleto) com janela deslizante.
-    Arestas entre KPs consecutivos no contorno; peso = distância euclidiana.
-    (Alinha com a seção de KPs e a conversão para grafo do artigo.)
+    KPs por desvio angular local no CONTORNO do esqueleto.
+    Arestas: apenas entre KPs ADJACENTES dentro do MESMO contorno (stroke).
+    Peso: distância euclidiana (paper).
     """
 
     def __init__(self, curv_thr_deg=8.0, win=7, step=1, nms_radius=5):
@@ -24,7 +24,7 @@ class GraphKPGraph:
 
     @staticmethod
     def _contours_from_skeleton(skel):
-        # esqueleto 1px -> contorno detalhado
+        # esqueleto 1px -> contornos
         b = GraphKPGraph._binary_255(skel)
         contours, _ = cv2.findContours(b, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
         return contours
@@ -33,8 +33,13 @@ class GraphKPGraph:
     def _angle(p0, p1):
         return np.arctan2(p1[1]-p0[1], p1[0]-p0[0])
 
-    def detect_keypoints(self, skeleton_image):
-        kps_all = []
+    def detect_keypoints(self, skeleton_image, return_sequences=False):
+        """
+        Retorna:
+          - se return_sequences=True: List[List[(x,y)]] (uma sequência por contorno)
+          - caso contrário: lista achatada (compatibilidade)
+        """
+        seqs = []
         contours = self._contours_from_skeleton(skeleton_image)
 
         for cnt in contours:
@@ -45,13 +50,7 @@ class GraphKPGraph:
             n = len(pts)
             half = self.win // 2
 
-            # curvatura/Δângulo local
-            angles = []
-            for i in range(1, n):
-                angles.append(self._angle(pts[i-1], pts[i]))
-            angles = np.array(angles)
-
-            # varre com janela para medir desvio entre direções separadas por "half"
+            # desvio angular local
             dev = []
             for i in range(half, n - half):
                 a1 = self._angle(pts[i-half], pts[i])
@@ -59,47 +58,79 @@ class GraphKPGraph:
                 d = a2 - a1
                 d = np.arctan2(np.sin(d), np.cos(d))  # [-pi, pi]
                 dev.append(abs(d))
-            dev = np.array(dev)
+            dev = np.array(dev) if len(dev) else np.zeros(0)
 
-            # pontos candidatos: |Δθ| acima do limiar
-            cand_idx = np.where(dev >= self.curv_thr)[0] + half
-            cand_pts = [tuple(pts[i]) for i in cand_idx]
+            # candidatos: |Δθ| >= limiar
+            cand_idx = (np.where(dev >= self.curv_thr)[0] + half) if len(dev) else np.array([], dtype=int)
 
-            # NMS: remove candidatos muito próximos (mantém maiores desvios)
+            # NMS simples ao longo da sequência
             vals = dev[cand_idx - half] if len(cand_idx) else np.array([])
             order = np.argsort(-vals) if len(vals) else []
             taken = np.zeros(len(pts), dtype=bool)
-            kept = []
+            kept_idxs = []
             for oi in order:
                 i = cand_idx[oi]
                 if taken[max(0, i-self.nms_r):min(len(pts), i+self.nms_r+1)].any():
                     continue
-                kept.append(tuple(pts[i]))
+                kept_idxs.append(i)
                 taken[i] = True
 
-            # sempre garante extremos do contorno
+            # garante extremos
             if len(pts) > 0:
-                kept = [tuple(pts[0])] + kept + [tuple(pts[-1])]
-            kps_all.extend([(int(x), int(y)) for (x, y) in kept])
+                kept_idxs = [0] + sorted(kept_idxs) + [len(pts)-1]
 
-        # remove duplicados preservando ordem
-        seen = set()
-        uniq = []
-        for p in kps_all:
-            if p not in seen:
-                seen.add(p)
-                uniq.append(p)
-        return uniq
+            seq = [(int(pts[i][0]), int(pts[i][1])) for i in kept_idxs]
+            # remove duplicatas consecutivas
+            seq_dedup = [seq[0]] if seq else []
+            for p in seq[1:]:
+                if p != seq_dedup[-1]:
+                    seq_dedup.append(p)
+            if len(seq_dedup) >= 2:
+                seqs.append(seq_dedup)
+
+        if return_sequences:
+            return seqs
+        # compat: lista achatada
+        flat = [p for s in seqs for p in s]
+        return flat
+
+    def create_graph_from_sequences(self, kp_sequences):
+        """
+        kp_sequences: List[List[(x,y)]] — uma lista de sequências (um stroke por contorno).
+        Cria arestas APENAS entre vizinhos dentro de cada sequência.
+        """
+        self.graph.clear()
+        node_idx = 0
+        for seq in kp_sequences:
+            if len(seq) < 2:
+                continue
+            # adiciona nós da sequência
+            idxs = []
+            for (x, y) in seq:
+                self.graph.add_node(node_idx, pos=(x, y))
+                idxs.append(node_idx)
+                node_idx += 1
+            # liga apenas vizinhos da própria sequência
+            for a, b in zip(idxs[:-1], idxs[1:]):
+                (x1, y1) = self.graph.nodes[a]["pos"]
+                (x2, y2) = self.graph.nodes[b]["pos"]
+                w = euclidean((x1, y1), (x2, y2))
+                self.graph.add_edge(a, b, weight=w)
 
     def create_graph(self, keypoints):
-        self.graph.clear()
-        for idx, (x, y) in enumerate(keypoints):
-            self.graph.add_node(idx, pos=(x, y))
-        for i in range(len(keypoints) - 1):
-            x1, y1 = keypoints[i]
-            x2, y2 = keypoints[i + 1]
-            w = euclidean((x1, y1), (x2, y2))
-            self.graph.add_edge(i, i + 1, weight=w)
+        """
+        Compatibilidade: se receber uma lista simples [(x,y)], trata como UMA sequência.
+        Preferir usar create_graph_from_sequences(...) no pipeline.
+        """
+        if not keypoints:
+            self.graph.clear()
+            return
+        if isinstance(keypoints[0], (list, tuple)) and len(keypoints) > 0 and isinstance(keypoints[0][0], (int, np.integer)):
+            # lista plana
+            self.create_graph_from_sequences([keypoints])
+        else:
+            # já é lista de sequências
+            self.create_graph_from_sequences(keypoints)
 
     def draw_on_image(self, base_image, save_path=None, show=False):
         if len(base_image.shape) == 2:

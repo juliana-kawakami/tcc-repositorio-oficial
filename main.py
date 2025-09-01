@@ -54,21 +54,17 @@ def main(image_path: str = "images/CF00315_01.bmp") -> None:
     for i, line_img in enumerate(line_imgs, start=1):
         line_skel = Preprocessing.skeletonize_image(line_img, save_step=False)
         g = GraphKPGraph(curv_thr_deg=8.0, win=7, step=1, nms_radius=5)
-        kps = g.detect_keypoints(line_skel)
-        g.create_graph(kps)
-        g.draw_on_image(
-            line_skel, save_path=f"segmentacao/graphs/line_{i}_graph.png", show=False
-        )
+        kps_seq = g.detect_keypoints(line_skel, return_sequences=True)  # << agora por contorno
+        g.create_graph_from_sequences(kps_seq)
+        g.draw_on_image(line_skel, save_path=f"segmentacao/graphs/line_{i}_graph.png", show=False)
 
     for i, word_imgs in enumerate(word_imgs_per_line, start=1):
         for j, wimg in enumerate(word_imgs, start=1):
             w_skel = Preprocessing.skeletonize_image(wimg, save_step=False)
             gw = GraphKPGraph(curv_thr_deg=8.0, win=7, step=1, nms_radius=3)
-            kps_w = gw.detect_keypoints(w_skel)
-            gw.create_graph(kps_w)
-            gw.draw_on_image(
-                w_skel, save_path=f"segmentacao/graphs/line_{i}_word_{j}_graph.png", show=False
-            )
+            kps_seq_w = gw.detect_keypoints(w_skel, return_sequences=True)
+            gw.create_graph_from_sequences(kps_seq_w)
+            gw.draw_on_image(w_skel, save_path=f"segmentacao/graphs/line_{i}_word_{j}_graph.png", show=False)
 
 if __name__ == "__main__":
     main()
